@@ -38,6 +38,19 @@ jobs:
       - name: Installer les dépendances
         run: python -m pip install -r ingestor/requirements.txt
 
+      - name: Compléter la chaîne HTTPS de la Bourse
+        shell: bash
+        run: |
+          der="$RUNNER_TEMP/marketlens-sectigo.der"
+          pem="$RUNNER_TEMP/marketlens-sectigo.pem"
+          bundle="$RUNNER_TEMP/marketlens-ca.pem"
+          curl --fail --silent --show-error --max-time 20 --proto '=http' \
+            http://crt.sectigo.com/SectigoPublicServerAuthenticationCADVR36.crt -o "$der"
+          printf '%s  %s\n' 8c54c334b66ba4e426772af4a3f9136c19a1aec729fdb28c535c07a5a4ef22e0 "$der" | sha256sum --check
+          openssl x509 -inform DER -in "$der" -out "$pem"
+          cat /etc/ssl/certs/ca-certificates.crt "$pem" > "$bundle"
+          printf 'SSL_CERT_FILE=%s\n' "$bundle" >> "$GITHUB_ENV"
+
       - name: Mettre à jour la base
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
