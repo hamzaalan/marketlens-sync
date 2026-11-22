@@ -120,7 +120,8 @@ def deliver_mail(send=smtp_send):
         for message, alert, target, subject, body, attempts in rows:
             try:
                 send(message, target, subject, body)
-            except (OSError, smtplib.SMTPException, ValueError, KeyError):
+            except (OSError, smtplib.SMTPException, ValueError, KeyError) as error:
+                print(f"Relais SMTP · {type(error).__name__} · code {getattr(error, 'smtp_code', 'indisponible')}", file=sys.stderr)
                 delay = min(3600, 30 * 2 ** attempts) * 1000
                 conn.execute('UPDATE mail_outbox SET attempts=attempts+1,available_at=%s WHERE id=%s', (now_ms() + delay, message))
                 if alert and attempts == 9:
