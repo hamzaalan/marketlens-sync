@@ -1,0 +1,92 @@
+name: MarketLens AI · Synchronisation
+
+'on':
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+    - cron: '19 20 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Opération à exécuter
+        type: choice
+        default: initialisation
+        options:
+          - initialisation
+          - actualisation
+          - historiques
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketlens-synchronisation
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ingestor/requirements.txt
+      - name: Installer les dépendances
+        run: python -m pip install -r ingestor/requirements.txt
+
+      - name: Mettre à jour la base
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CASAQUANT_PUBLIC_URL: ${{ vars.CASAQUANT_PUBLIC_URL }}
+          CASAQUANT_SMTP_HOST: smtp-relay.brevo.com
+          CASAQUANT_SMTP_PORT: '587'
+          CASAQUANT_SMTP_SECURITY: starttls
+          CASAQUANT_SMTP_USER: ${{ secrets.CASAQUANT_SMTP_USER }}
+          CASAQUANT_SMTP_PASSWORD: ${{ secrets.CASAQUANT_SMTP_PASSWORD }}
+          CASAQUANT_SMTP_FROM: ${{ vars.CASAQUANT_SMTP_FROM }}
+          OPERATION: ${{ inputs.operation }}
+          SCHEDULE: ${{ github.event.schedule }}
+        shell: bash
+        run: |
+          if [[ -z "$DATABASE_URL" ]]; then
+            echo 'Ajoutez DATABASE_URL dans les secrets du dépôt.'
+            exit 1
+          fi
+          export CASAQUANT_MAIL_ENABLED=0
+          if [[ -n "$CASAQUANT_SMTP_USER" && -n "$CASAQUANT_SMTP_PASSWORD" && -n "$CASAQUANT_SMTP_FROM" ]]; then
+            export CASAQUANT_MAIL_ENABLED=1
+          fi
+
+          status=0
+          worker() {
+            python ingestor/worker.py --once --jobs "$@" || status=1
+          }
+          ocr() {
+            if ! command -v tesseract >/dev/null || ! tesseract --list-langs 2>/dev/null | grep -qx fra; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra
+            fi
+          }
+          if [[ "$OPERATION" == initialisation ]]; then
+            ocr
+            python ingestor/main.py --sync-market --market-pages 3
+            python ingestor/main.py --sync-live --ocr || status=1
+            worker quotes fundamentals history
+          elif [[ "$OPERATION" == historiques || "$SCHEDULE" == '19 20 * * 1-5' ]]; then
+            worker bulletins fundamentals history
+          else
+            hour=$((10#$(TZ=Africa/Casablanca date +%H)))
+            weekday=$(TZ=Africa/Casablanca date +%u)
+            if [[ "$OPERATION" == actualisation || ( "$weekday" -le 5 && "$hour" -ge 8 && "$hour" -le 20 ) ]]; then
+              worker quotes alerts mail
+              ocr
+              worker publications
+            elif [[ "$CASAQUANT_MAIL_ENABLED" == 1 ]]; then
+              worker mail
+            fi
+          fi
+          exit "$status"
